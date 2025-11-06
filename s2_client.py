@@ -8,13 +8,13 @@ Semantic Scholar Graph API（Bulk）检索客户端（仅 bulk 端点）
 2) AND-of-OR 的查询串构造（any_groups 支持同义词/别名的“或”，组间“与”）；
 3) 速率限制 + 指数退避重试；
 4) 尽量使用服务端过滤（publicationDateOrYear / publicationTypes / openAccessPdf / venue / sort）；
-5) 客户端兜底过滤（作者精确/包含匹配；venue 同义词规整；日期区间精确到日；最小有影响力引用数；publication_types 交集匹配）；
-6) 返回 (collected, batch)：collected 为过滤后的结果，batch 为最后一页原始转换结果用于调试展示。
-
-注意：
-- 本实现**仅使用 bulk 端点**，不做回落到 /paper/search。
-- 移除了 fields_of_study 的所有过滤逻辑（服务器端和客户端都不再使用）。
-- 服务器端目前不支持 minInfluentialCitationCount，因此该项留给客户端过滤。
+5) 客户端兜底过滤（作者精确/包含匹配；venue 同义词规整；日期区间精确到日；
+   最小有影响力引用数；publication_types 交集匹配）；
+6) 去重（基于 DOI > URL > 规范化标题+年份），并尊重 total/无新增终止，避免翻页重复；
+7) 返回 (collected, batch, stats)：
+   - collected：过滤+去重后的累计结果
+   - batch：最后一页“去重后但未做客户端过滤”的原始结果（便于前端对比）
+   - stats：计数/参数信息（server_total/raw_fetched/raw_unique/after_filter/query/per_page/pages/params_used）
 """
 
 import asyncio
@@ -61,87 +61,45 @@ VENUE_SYNONYMS = {
 # =========================================================
 def _quote_if_needed(s: str) -> str:
     """多词短语自动加引号，保证作为整体匹配；已包引号则不重复。"""
-    s = s.strip()
+    s = (s or "").strip()
     if not s:
         return s
-    if " " in s and not (s.startswith('"') and s.endswith('"')):
-        return f'"{s}"'
-    return s
-
-# def _build_query(intent: SearchIntent) -> str:
-#     """
-#     将 any_groups（AND-of-OR）转为 S2 的 query 字符串：
-#     - any_groups: List[List[str]]，每个子列表是一组“同义词/等价表达”，组内使用 OR，组间使用 AND。
-#     - 为提高兼容性，这里用空格连接“组间 AND”，组内显式 "(a OR b)"。
-#     - 若指定 author，则把作者名（短语）并入查询词，提升召回概率。
-#     - 若指定 venues，则将 venue 字符串也并入查询词（真正过滤交给服务器参数 + 客户端核验）。
-#     - 若最终为空，则返回 "*"。
-#     """
-#     parts: List[str] = []
-
-#     # 组内 OR、组间 AND（以空格连接）
-#     for group in (intent.any_groups or []):
-#         toks = [_quote_if_needed(t) for t in group if t and str(t).strip()]
-#         toks = list(dict.fromkeys(toks))  # 去重保持顺序
-#         if not toks:
-#             continue
-#         if len(toks) == 1:
-#             parts.append(toks[0])
-#         else:
-#             parts.append("(" + " OR ".join(toks) + ")")
-
-#     # 作者作为“查询提示”，也加入（同时客户端再做精匹配）
-#     if intent.author:
-#         parts.append(_quote_if_needed(intent.author))
-
-#     # 场馆名也加一点“召回提示”
-#     if intent.venues:
-#         parts.extend([_quote_if_needed(v) for v in intent.venues if v and str(v).strip()])
-
-#     q = " ".join([p for p in parts if p]) or "*"
-#     return q
-# s2_client.py
-
-def _quote_if_needed(s: str) -> str:
-    s = s.strip()
-    if not s:
-        return s
-    # 多词短语加引号
     if " " in s and not (s.startswith('"') and s.endswith('"')):
         return f'"{s}"'
     return s
 
 def _build_query(intent: SearchIntent) -> str:
     """
-    将 any_groups（AND-of-OR）转换为“简单关键词串”：
-    - 组内的同义词：全部平铺（用空格隔开），不加 OR/AND/括号
-    - 组与组之间：同样直接空格连接（更“宽松”，更易召回）
-    - 作者、场馆作为“召回提示”一并拼接（真正过滤交给参数与客户端兜底）
-    - 最终留空则用 "*"
+    将 any_groups（AND-of-OR）转换为“宽松关键词串”：
+    - 组内同义词与组间都用空格直接拼接（S2 query 不保证布尔语义，宽松召回更稳）；
+    - 作者/venue 名称也拼入 query 作为召回提示（严格筛选交由服务端参数 + 客户端核验）；
+    - 留空则使用 "*"。
     """
     toks: List[str] = []
 
-    # 平铺所有同义词
+    # 平铺所有同义词组
     for group in (intent.any_groups or []):
         for term in group:
             if term and str(term).strip():
                 toks.append(_quote_if_needed(term))
 
-    # 作者/场馆也加入（召回提示）
+    # 作者/场馆作为提示词加入
     if intent.author:
         toks.append(_quote_if_needed(intent.author))
     if intent.venues:
         toks.extend([_quote_if_needed(v) for v in intent.venues if v and str(v).strip()])
 
-    # 去重但保序
+    # 去重（保序）
     seen = set()
-    flat = []
+    flat: List[str] = []
     for t in toks:
         if t and t not in seen:
             seen.add(t)
             flat.append(t)
 
-    return " ".join(flat) or "*"
+    q = " ".join(flat) or "*"
+    logger.info(f"[S2] QUERY='{q}'")
+    return q
 
 # =========================================================
 # 2) 速率限制 + 指数退避重试
@@ -172,41 +130,48 @@ async def _http_get(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
             async with httpx.AsyncClient(timeout=25.0) as client:
                 r = await client.get(url, params=params, headers=headers)
 
-            if r.status_code == 200:
-                return r.json()
+            # 日志里去掉 fields，避免冗长；且用参数化日志避免花括号歧义
+            log_params = {kk: vv for kk, vv in params.items() if kk != "fields"}
+            logger.debug("[S2] HTTP %s GET %s params=%s", r.status_code, url, log_params)
 
-            # 429/50x：指数退避
+            if r.status_code == 200:
+                j = r.json()
+                if attempt > 0:
+                    logger.info("[S2] recovered after %d retries", attempt)
+                return j
+
+            # 可恢复错误：退避重试
             if r.status_code in (429, 500, 502, 503, 504):
-                logger.warning(f"[S2] {r.status_code}; retry in {backoff:.1f}s")
+                logger.warning("[S2] %s; retry in %.1fs (attempt %d)", r.status_code, backoff, attempt + 1)
                 await asyncio.sleep(backoff + random.uniform(0, 0.3))
                 backoff = min(backoff * 2, 8.0)
                 continue
 
             # 其它错误：记录并返回空
-            logger.error(f"[S2] error {r.status_code}: {r.text[:200]}")
+            logger.error("[S2] error %s: %s", r.status_code, r.text[:200])
             return {"total": 0, "data": []}
 
-        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            logger.warning("[S2] timeout: %s; retry in %.1fs (attempt %d)", repr(e), backoff, attempt + 1)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 8.0)
+            continue
+
         except Exception as e:
-            if attempt >= 5:
-                logger.error(f"[S2] fatal after retries: {e}")
+            logger.exception("[S2] unexpected error on attempt %d: %s", attempt + 1, repr(e))
+            if attempt >= 5:  # 最后一次也失败了
                 return {"total": 0, "data": []}
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 8.0)
+            continue
 
+    # 所有重试均失败
     return {"total": 0, "data": []}
 
 # =========================================================
-# 3) 工具：作者/venue/日期/类型 过滤
+# 3) 工具：作者/venue/日期/类型 过滤 + 去重键 + 调试辅助
 # =========================================================
 def _author_match(p: PaperMetadata, target: Optional[str]) -> bool:
-    """
-    作者过滤（客户端兜底）：
-    - 未指定 target 时通过；
-    - 大小写无关：完全相等或包含匹配。
-    """
     if not target:
         return True
     t = target.strip().lower()
@@ -217,16 +182,9 @@ def _author_match(p: PaperMetadata, target: Optional[str]) -> bool:
     return False
 
 def _norm_token(s: str) -> str:
-    """对比前规整：大写并去除非字母数字字符。"""
     return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
 
 def _venue_match(p: PaperMetadata, venues: List[str]) -> bool:
-    """
-    会议/期刊过滤（客户端兜底）：
-    - 未指定 venues 通过；
-    - 论文缺 venue 则不通过（严格型）；
-    - 规整化 + 同义词展开后比较（精确或包含）。
-    """
     if not venues:
         return True
     if not p.journal:
@@ -247,41 +205,18 @@ def _venue_match(p: PaperMetadata, venues: List[str]) -> bool:
     return False
 
 def _pubtypes_match(p: PaperMetadata, want: List[str]) -> bool:
-    """
-    文献类型匹配（客户端兜底）：
-    - want 为空则通过；
-    - 两侧均转小写比较，判定是否有交集；
-    - 若论文缺失 publication_types：
-        * 若 want 仅包含研究类（JournalArticle/Conference），遵循旧逻辑“缺失也通过”；
-        * 若 want 包含 Review，则严格要求具有 review 证据（缺失则不通过）。
-    """
     if not want:
         return True
-
     want_set = {w.strip().lower() for w in want if w}
-    # 研究类集合
     research_set = {"journalarticle", "conference"}
-
-    # 论文侧
     types = [x.lower() for x in (p.publication_types or [])]
-
     if not types:
-        # 缺类型：若仅要求研究类，则放行；若包含 Review，则不通过
         only_research = all(w in research_set for w in want_set)
         return only_research
-
     have_set = set(types)
-    # 交集即通过
     return bool(have_set & want_set)
 
-# ---- 日期解析（支持 YYYY / YYYY-MM / YYYY-MM-DD） ----
 def _parse_date_any(s: Optional[str], end: bool = False) -> Optional[date]:
-    """
-    将 'YYYY' / 'YYYY-MM' / 'YYYY-MM-DD' 解析为 date。
-    - 对 YYYY：start -> 1/1；end -> 12/31
-    - 对 YYYY-MM：start -> 当月1日；end -> 当月最后一日
-    - 对 YYYY-MM-DD：直接转换
-    """
     if not s:
         return None
     ss = s.strip()
@@ -293,38 +228,26 @@ def _parse_date_any(s: Optional[str], end: bool = False) -> Optional[date]:
             y, m = map(int, ss.split("-"))
             last = calendar.monthrange(y, m)[1]
             return date(y, m, last) if end else date(y, m, 1)
-        # YYYY-MM-DD
         return datetime.fromisoformat(ss).date()
     except Exception:
         return None
 
 def _date_match(p: PaperMetadata, ds: Optional[str], de: Optional[str]) -> bool:
-    """
-    精确到“日”的时间窗过滤（客户端兜底）：
-    - 优先用 publication_date；
-    - 无则用 year 的“中位日”（7/1）近似；
-    - 若 intent 给了时间窗但论文没有日期/年份，则剔除。
-    """
     if not (ds or de):
         return True
-
-    # 先用 publication_date（YYYY-MM-DD）
     pd = None
     if p.publication_date:
         try:
             pd = datetime.fromisoformat(p.publication_date[:10]).date()
         except Exception:
             pd = None
-    # 退化用 year 近似（年中位）
     if not pd and p.year:
         try:
-            pd = date(int(p.year), 7, 1)
+            pd = date(int(p.year), 7, 1)  # 年中位
         except Exception:
             pd = None
-
     if not pd:
         return False
-
     start = _parse_date_any(ds, end=False)
     endd = _parse_date_any(de, end=True)
     if start and pd < start:
@@ -334,19 +257,45 @@ def _date_match(p: PaperMetadata, ds: Optional[str], de: Optional[str]) -> bool:
     return True
 
 def _min_influential_match(p: PaperMetadata, mc: Optional[int]) -> bool:
-    """最小“有影响力引用数”阈值（客户端过滤）。"""
     if mc is None:
         return True
     return (p.influential_citations or 0) >= mc
+
+def _norm_title(t: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (t or "").strip().lower())
+
+def _unique_key(p: PaperMetadata) -> tuple:
+    """去重主键优先级：DOI > URL > (规范化标题, 年份)"""
+    if p.doi:
+        return ("doi", (p.doi or "").lower())
+    if p.url:
+        return ("url", (p.url or "").lower())
+    return ("ty", _norm_title(p.title), int(p.year or 0))
+
+def _short(txt: Optional[str], n: int = 120) -> str:
+    s = (txt or "").replace("\n", " ").strip()
+    return (s[: n - 1] + "…") if len(s) > n else s
+
+def _why_reject(p: PaperMetadata, intent: SearchIntent) -> Optional[str]:
+    """返回第一个触发的过滤原因（仅用于 DEBUG 日志）。"""
+    if not _author_match(p, intent.author):
+        return "author_mismatch"
+    if not _venue_match(p, intent.venues):
+        return f"venue_mismatch(p.journal={p.journal})"
+    if not _pubtypes_match(p, intent.publication_types):
+        return f"pubtypes_mismatch(p.types={p.publication_types}, want={intent.publication_types})"
+    if intent.must_have_pdf and not p.open_access:
+        return "need_open_access_pdf"
+    if not _date_match(p, intent.date_start, intent.date_end):
+        return f"date_out_of_range(pub_date={p.publication_date}, year={p.year})"
+    if not _min_influential_match(p, intent.min_influential_citations):
+        return f"low_influential_citations({p.influential_citations})"
+    return None
 
 # =========================================================
 # 4) 服务器参数（尽可能让服务器过滤/排序）
 # =========================================================
 def _date_param(intent: SearchIntent) -> Dict[str, Any]:
-    """
-    publicationDateOrYear: "<start>:<end>"（任一可缺省）
-    - start/end 允许 YYYY / YYYY-MM / YYYY-MM-DD
-    """
     ds = (intent.date_start or "").strip()
     de = (intent.date_end or "").strip()
     if ds or de:
@@ -354,36 +303,25 @@ def _date_param(intent: SearchIntent) -> Dict[str, Any]:
     return {}
 
 def _pubtypes_param(intent: SearchIntent) -> Dict[str, Any]:
-    """
-    publicationTypes: 逗号分隔，允许 "JournalArticle","Conference","Review"
-    - 若传入 ["Review"] -> "Review"
-    - 若传入 ["JournalArticle","Conference"] -> "JournalArticle,Conference"
-    - 其它组合按原样拼接
-    """
     pts = [t for t in (intent.publication_types or []) if t]
     if not pts:
         return {}
-    # 去重并保持次序
-    norm = []
-    seen = set()
+    norm: List[str] = []
+    seen: set = set()
     for t in pts:
         key = t.strip()
-        if not key:
-            continue
-        if key not in seen:
-            norm.append(key)
+        if key and key not in seen:
             seen.add(key)
+            norm.append(key)
     return {"publicationTypes": ",".join(norm)} if norm else {}
 
 def _venues_param(intent: SearchIntent) -> Dict[str, Any]:
-    """venue: 逗号分隔"""
     params: Dict[str, Any] = {}
     if intent.venues:
         params["venue"] = ",".join(intent.venues)
-    return params  # ← 修正：原实现误返回 {}
+    return params
 
 def _if_must_have_pdf_param(intent: SearchIntent) -> Dict[str, Any]:
-    """openAccessPdf: true/false（这里只在 True 时下发，False=不加）"""
     params: Dict[str, Any] = {}
     if intent.must_have_pdf:
         params["openAccessPdf"] = "true"
@@ -391,13 +329,16 @@ def _if_must_have_pdf_param(intent: SearchIntent) -> Dict[str, Any]:
 
 def _sort_param(intent: SearchIntent) -> Dict[str, Any]:
     """
-    bulk 支持 sort: relevance | citationCount | publicationDate
-    - 服务器默认 relevance；若用户选 relevance 可不下发 sort。
+    bulk sort: <field>:<order>
+    field: paperId | publicationDate | citationCount
+    order: asc | desc
+    relevance 不要下发（默认相关性）
     """
     s = (intent.sort_by or "").strip()
-    if s in ("citationCount", "publicationDate"):
-        return {"sort": s}
-    # relevance 或其它 -> 让服务器默认
+    if s == "citationCount":
+        return {"sort": "citationCount:desc"}
+    if s == "publicationDate":
+        return {"sort": "publicationDate:desc"}
     return {}
 
 # =========================================================
@@ -426,18 +367,18 @@ def _item_to_paper(item: Dict[str, Any]) -> PaperMetadata:
         open_access=open_pdf,
         publication_types=pub_types,
         publication_date=item.get("publicationDate"),
-        fields_of_study=fos,  # 虽然不再用于过滤，但仍保留给上层展示/调试
+        fields_of_study=fos,
     )
 
 # =========================================================
-# 6) 主流程：bulk 调用 + 服务端过滤 + 客户端兜底
+# 6) 主流程：bulk 调用 + 服务端过滤 + 客户端兜底 + 去重 + 详尽日志
 # =========================================================
 async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List[PaperMetadata], Dict[str, Any]]:
     """
     执行检索并返回 (collected, batch, stats)：
-    - collected：经过“服务端过滤 + 客户端兜底过滤”的结果集合
-    - batch：最后一页的原始转换结果（便于调试/展示）
-    - stats：计数与调试信息（server_total/raw_fetched/after_filter/query/per_page/pages）
+    - collected：经过“服务端过滤 + 客户端兜底过滤 + 去重”的结果集合
+    - batch：最后一页的原始转换结果（已做“跨页去重”，但未做客户端字段过滤）
+    - stats：计数与调试信息
     """
     query = _build_query(intent)
 
@@ -455,7 +396,7 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
     server_params.update(_pubtypes_param(intent))
     server_params.update(_sort_param(intent))
 
-    logger.debug(f"[S2] bulk params(base)={server_params}")
+    logger.info(f"[S2 PARAMS] { {k: v for k, v in server_params.items() if k != 'fields'} }")
 
     offset = 0
     collected: List[PaperMetadata] = []
@@ -463,52 +404,86 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
 
     # 统计用
     raw_fetched = 0
+    raw_unique = 0
     server_total: Optional[int] = None
     pages = 0
 
-    for _ in range(max_pages):
+    # 去重集（跨页）
+    seen_keys: set = set()
+    no_new_page_in_a_row = 0
+
+    while pages < max_pages:
         server_params["offset"] = offset
         data = await _http_get(BULK_URL, server_params)
 
         items = data.get("data") or []
-        # 统计：服务端 total（通常出现在第一页）
         if server_total is None:
             server_total = data.get("total")
+
+        logger.info(f"[S2] page={pages+1} offset={offset} received={len(items)} total={server_total}")
 
         if not items:
             break
 
         pages += 1
         raw_fetched += len(items)
-        batch = [_item_to_paper(it) for it in items]
 
-        # ---- 客户端兜底过滤 ----
-        filtered: List[PaperMetadata] = []
-        for p in batch:
-            if not _author_match(p, intent.author):
+        # --- 页内转对象 + 立刻跨页去重 ---
+        page_new_objects: List[PaperMetadata] = []
+        page_dup = 0
+        for it in items:
+            p = _item_to_paper(it)
+            k = _unique_key(p)
+            if k in seen_keys:
+                page_dup += 1
+                # 只在 DEBUG 打印重复的 key 与题目
+                logger.debug(f"[S2] DUP skip key={k[:2]} title='{_short(p.title)}'")
                 continue
-            if not _venue_match(p, intent.venues):
-                continue
-            if not _pubtypes_match(p, intent.publication_types[0] if intent.publication_types else None):
-                continue
-            if intent.must_have_pdf and not p.open_access:
-                continue
-            if not _date_match(p, intent.date_start, intent.date_end):
-                continue
-            if not _min_influential_match(p, intent.min_influential_citations):
-                continue
-            filtered.append(p)
+            seen_keys.add(k)
+            page_new_objects.append(p)
 
-        collected.extend(filtered)
+        page_new_count = len(page_new_objects)
+        raw_unique += page_new_count
+        batch = list(page_new_objects)
 
-        if len(collected) >= intent.max_results * 3:
+        logger.info(f"[S2] page_new_unique={page_new_count} page_dup={page_dup}")
+
+        # --- 客户端兜底过滤 ---
+        kept: List[PaperMetadata] = []
+        dropped = 0
+        for p in page_new_objects:
+            reason = _why_reject(p, intent)
+            if reason is None:
+                kept.append(p)
+            else:
+                dropped += 1
+                logger.debug(f"[S2] REJECT reason={reason} | title='{_short(p.title)}' | venue='{p.journal}' | date={p.publication_date} | infl={p.influential_citations} | types={p.publication_types} | open={p.open_access}")
+
+        collected.extend(kept)
+        logger.info(f"[S2] page_kept={len(kept)} page_dropped={dropped} collected_total={len(collected)}")
+
+        # --- 终止条件 ---
+        if server_total is not None and offset + len(items) >= server_total:
+            logger.info("[S2] reached server_total end, stop paging")
             break
 
-        offset += per_page
+        if page_new_count == 0:
+            no_new_page_in_a_row += 1
+            logger.info(f"[S2] no new unique on this page (#{no_new_page_in_a_row}) -> stop")
+            break
+        else:
+            no_new_page_in_a_row = 0
+
+        if len(collected) >= intent.max_results * 3:
+            logger.info("[S2] collected enough, stop early")
+            break
+
+        offset += len(items)
 
     stats = {
         "server_total": server_total,
         "raw_fetched": raw_fetched,
+        "raw_unique": raw_unique,
         "after_filter": len(collected),
         "query": query,
         "per_page": per_page,
@@ -518,6 +493,6 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
 
     logger.info(
         f"[S2] server_total={server_total} raw_fetched={raw_fetched} "
-        f"after_filter={len(collected)} pages={pages}"
+        f"raw_unique={raw_unique} after_filter={len(collected)} pages={pages}"
     )
     return collected, stats

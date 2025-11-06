@@ -45,12 +45,12 @@ def _recency_days(p: PaperMetadata) -> Optional[int]:
     today = datetime.now(LOCAL_TZ).date()
     return max(0, (today - d).days)
 
-# ---------- “天”粒度新鲜度分（半衰 2 年） ----------
+# ---------- “天”粒度新鲜度分（半衰 一 年） ----------
 def _recency_score_by_day(p: PaperMetadata) -> float:
     days = _recency_days(p)
     if days is None:
         return 0.0
-    half_life_days = 730  # ≈2 年半衰
+    half_life_days = 365  # ≈1 年半衰
     return math.pow(2.0, - days / half_life_days)
 
 # ---------- 重要性综合分（只看“有影响力引用数”） ----------

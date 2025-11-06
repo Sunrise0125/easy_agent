@@ -6,10 +6,11 @@ from .llm_parser import parse_user_intent
 from .s2_client import search_papers
 from .ranking import rank_papers
 from .schemas import PaperMetadata  # 和可选的 SearchResponse
-import json
-import logging
+import json ,os
+from .logging_setup import setup_logging
 
-logger = logging.getLogger("paper_survey.app")
+
+setup_logging(os.getenv("LOG_LEVEL", "DEBUG"))
 
 app = FastAPI(title="PaperFinder Agent")
 
@@ -25,7 +26,7 @@ async def search(user_query: str = Query(...)):
     try:
         # 1) 解析意图
         intent = await parse_user_intent(user_query)
-        logger.info(f"[INTENT] {intent.dict()}")
+        # logger.info(f"[INTENT] {intent.dict()}")
 
         # 2) 调 S2 + 过滤（拿回统计）
         papers, stats = await search_papers(intent)
@@ -60,7 +61,7 @@ async def search(user_query: str = Query(...)):
             
         }
     except Exception as e:
-        logger.exception("search failed")
+        # logger.exception("search failed")
         return {
             "query": user_query,
             "error": str(e),
