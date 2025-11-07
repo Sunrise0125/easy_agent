@@ -23,6 +23,7 @@ import logging
 import httpx
 import re
 import calendar
+import itertools
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
 
@@ -68,32 +69,40 @@ def _quote_if_needed(s: str) -> str:
         return f'"{s}"'
     return s
 
-def _build_query(intent: SearchIntent) -> str:
+def _build_query_combinations(intent: SearchIntent) -> List[str]:
     """
-    将 any_groups（AND-of-OR）转换为"宽松关键词串"：
-    - 组内同义词与组间都用空格直接拼接（S2 query 不保证布尔语义，宽松召回更稳）；
-    - 仅包含主题关键词，作者/venue 通过服务端参数进行精确筛选；
-    - 留空则使用 "*"。
+    将 any_groups（AND-of-OR）展开为笛卡尔积组合查询列表：
+    - 同一子数组内为同义词"或"关系，子数组之间为"且"关系
+    - 生成所有可能的组合（从每个组选一个词）
+    - 例如：[["A", "B"], ["C"]] -> ["A C", "B C"]
+    - 留空则返回 ["*"]
     """
-    toks: List[str] = []
-
-    # 平铺所有同义词组
-    for group in (intent.any_groups or []):
-        for term in group:
-            if term and str(term).strip():
-                toks.append(_quote_if_needed(term))
-
-    # 去重（保序）
-    seen = set()
-    flat: List[str] = []
-    for t in toks:
-        if t and t not in seen:
-            seen.add(t)
-            flat.append(t)
-
-    q = " ".join(flat) or "*"
-    logger.info(f"[S2] QUERY='{q}'")
-    return q
+    groups = intent.any_groups or []
+    
+    # 过滤空组和空词
+    filtered_groups: List[List[str]] = []
+    for group in groups:
+        clean_group = [_quote_if_needed(term) for term in group if term and str(term).strip()]
+        if clean_group:
+            filtered_groups.append(clean_group)
+    
+    if not filtered_groups:
+        return ["*"]
+    
+    # 生成笛卡尔积
+    combinations = list(itertools.product(*filtered_groups))
+    
+    # 构建查询字符串
+    queries: List[str] = []
+    for combo in combinations:
+        q = " ".join(combo)
+        queries.append(q)
+    
+    logger.info(f"[S2] Generated {len(queries)} query combination(s)")
+    for i, q in enumerate(queries, 1):
+        logger.info(f"[S2] Query {i}: '{q}'")
+    
+    return queries
 
 # =========================================================
 # 2) 速率限制 + 指数退避重试
@@ -367,18 +376,17 @@ def _item_to_paper(item: Dict[str, Any]) -> PaperMetadata:
 # =========================================================
 # 6) 主流程：bulk 调用 + 服务端过滤 + 客户端兜底 + 去重 + 详尽日志
 # =========================================================
-async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List[PaperMetadata], Dict[str, Any]]:
+async def _search_single_query(
+    query: str,
+    intent: SearchIntent,
+    global_seen_keys: set,
+    per_page: int,
+    max_pages: int
+) -> Tuple[List[PaperMetadata], Dict[str, Any]]:
     """
-    执行检索并返回 (collected, batch, stats)：
-    - collected：经过“服务端过滤 + 客户端兜底过滤 + 去重”的结果集合
-    - batch：最后一页的原始转换结果（已做“跨页去重”，但未做客户端字段过滤）
-    - stats：计数与调试信息
+    执行单个查询并返回 (collected, stats)。
+    使用 global_seen_keys 进行跨查询去重。
     """
-    query = _build_query(intent)
-
-    per_page = min(max(intent.max_results * 3, 50), 100) if _HAS_KEY else max(intent.max_results * 2, 50)
-    max_pages = 4 if _HAS_KEY else 2
-
     server_params: Dict[str, Any] = {
         "query": query,
         "fields": FIELDS,
@@ -394,16 +402,12 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
 
     offset = 0
     collected: List[PaperMetadata] = []
-    batch: List[PaperMetadata] = []
 
     # 统计用
     raw_fetched = 0
     raw_unique = 0
     server_total: Optional[int] = None
     pages = 0
-
-    # 去重集（跨页）
-    seen_keys: set = set()
     no_new_page_in_a_row = 0
 
     while pages < max_pages:
@@ -428,17 +432,15 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
         for it in items:
             p = _item_to_paper(it)
             k = _unique_key(p)
-            if k in seen_keys:
+            if k in global_seen_keys:
                 page_dup += 1
-                # 只在 DEBUG 打印重复的 key 与题目
                 logger.debug(f"[S2] DUP skip key={k[:2]} title='{_short(p.title)}'")
                 continue
-            seen_keys.add(k)
+            global_seen_keys.add(k)
             page_new_objects.append(p)
 
         page_new_count = len(page_new_objects)
         raw_unique += page_new_count
-        batch = list(page_new_objects)
 
         logger.info(f"[S2] page_new_unique={page_new_count} page_dup={page_dup}")
 
@@ -469,7 +471,7 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
             no_new_page_in_a_row = 0
 
         if len(collected) >= intent.max_results * 3:
-            logger.info("[S2] collected enough, stop early")
+            logger.info("[S2] collected enough for this query, stop early")
             break
 
         offset += len(items)
@@ -480,13 +482,72 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
         "raw_unique": raw_unique,
         "after_filter": len(collected),
         "query": query,
-        "per_page": per_page,
         "pages": pages,
-        "params_used": {k: v for k, v in server_params.items() if k != "fields"},
+    }
+
+    return collected, stats
+
+
+async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List[PaperMetadata], Dict[str, Any]]:
+    """
+    执行检索并返回 (collected, batch, stats)：
+    - collected：经过"服务端过滤 + 客户端兜底过滤 + 去重"的结果集合
+    - batch：最后一个查询的最后一页结果（已去重）
+    - stats：计数与调试信息（包含所有查询组合的统计）
+    """
+    queries = _build_query_combinations(intent)
+
+    per_page = min(max(intent.max_results * 3, 50), 100) if _HAS_KEY else max(intent.max_results * 2, 50)
+    max_pages = 4 if _HAS_KEY else 2
+
+    # 全局去重集（跨所有查询组合）
+    global_seen_keys: set = set()
+    all_collected: List[PaperMetadata] = []
+    all_stats: List[Dict[str, Any]] = []
+    last_batch: List[PaperMetadata] = []
+
+    # 对每个查询组合执行搜索
+    for i, query in enumerate(queries, 1):
+        logger.info(f"[S2] ===== Executing query combination {i}/{len(queries)} =====")
+        
+        collected, single_stats = await _search_single_query(
+            query, intent, global_seen_keys, per_page, max_pages
+        )
+        
+        all_collected.extend(collected)
+        all_stats.append(single_stats)
+        
+        # 保留最后一个查询的结果作为 batch（与原始接口保持一致）
+        if i == len(queries):
+            last_batch = collected
+        
+        logger.info(
+            f"[S2] Query {i} summary: server_total={single_stats['server_total']} "
+            f"raw_fetched={single_stats['raw_fetched']} raw_unique={single_stats['raw_unique']} "
+            f"after_filter={single_stats['after_filter']} pages={single_stats['pages']}"
+        )
+
+    # 汇总统计
+    total_raw_fetched = sum(s["raw_fetched"] for s in all_stats)
+    total_raw_unique = sum(s["raw_unique"] for s in all_stats)
+    total_pages = sum(s["pages"] for s in all_stats)
+    
+    combined_stats = {
+        "query_combinations": len(queries),
+        "queries": [s["query"] for s in all_stats],
+        "total_raw_fetched": total_raw_fetched,
+        "total_raw_unique": total_raw_unique,
+        "final_unique_count": len(all_collected),
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "individual_stats": all_stats,
     }
 
     logger.info(
-        f"[S2] server_total={server_total} raw_fetched={raw_fetched} "
-        f"raw_unique={raw_unique} after_filter={len(collected)} pages={pages}"
+        f"[S2] ===== FINAL SUMMARY ===== "
+        f"queries={len(queries)} total_raw_fetched={total_raw_fetched} "
+        f"total_raw_unique={total_raw_unique} final_unique={len(all_collected)} "
+        f"total_pages={total_pages}"
     )
-    return collected, stats
+    
+    return all_collected, last_batch, combined_stats

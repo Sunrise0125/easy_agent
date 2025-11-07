@@ -39,12 +39,17 @@ async def simple_test():
         
         # 2. S2 API 搜索
         print("\n⏳ 步骤2: 调用 Semantic Scholar API 搜索...")
-        papers, stats = await search_papers(intent)
+        papers, batch, stats = await search_papers(intent)
         print(f"✓ 搜索完成")
-        print(f"  - 服务器总数: {stats.get('server_total')}")
-        print(f"  - 实际抓取: {stats.get('raw_fetched')}")
-        print(f"  - 过滤后: {stats.get('after_filter')}")
-        print(f"  - 查询字符串: {stats.get('query')}")
+        print(f"  - 查询组合数: {stats.get('query_combinations')}")
+        print(f"  - 总抓取条数: {stats.get('total_raw_fetched')}")
+        print(f"  - 总去重后: {stats.get('total_raw_unique')}")
+        print(f"  - 最终唯一: {stats.get('final_unique_count')}")
+        queries = stats.get('queries', [])
+        if queries:
+            print(f"  - 查询组合:")
+            for i, q in enumerate(queries, 1):
+                print(f"    {i}. {q}")
         
         # 3. 排序和截断
         print("\n⏳ 步骤3: 排序和截断...")

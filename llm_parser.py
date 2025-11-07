@@ -25,7 +25,7 @@ SYSTEM = (
     "请尽可能从用户输入中提取所有信息，并遵守以下规则：\n"
     "\n"
     "【检索查询提取（必填）】\n"
-    "- any_groups: string[]   # AND-of-OR。同一子数组内为同义词“或”关系，子数组之间为“且”关系。\n"
+    "- any_groups: string[][]   # AND-of-OR。同一子数组内为同义词“或”关系，子数组之间为“且”关系。\n"
     "- 统一输出为英文可检索短语短句；多词短语无需手动加引号；每组 1~3个词为宜；至少给出 1 组。\n"
     "  例：[[\"large language models\",\"LLM\",\"foundation models\"],[\"code generation\",\"program synthesis\"]]\n"
     "\n"

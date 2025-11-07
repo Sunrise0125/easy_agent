@@ -30,7 +30,7 @@ async def search(user_query: str = Query(...)):
         # logger.info(f"[INTENT] {intent.dict()}")
 
         # 2) 调 S2 + 过滤（拿回统计）
-        papers, stats = await search_papers(intent)
+        papers, batch, stats = await search_papers(intent)
 
         # 3) 排序 + 截断
         papers_sorted = rank_papers(papers, mode=intent.sort_by)
@@ -39,15 +39,16 @@ async def search(user_query: str = Query(...)):
         # 4) 组织返回
         api_params = {
             "endpoint": "graph/v1/paper/search/bulk",
-            "s2_query_built": stats.get("query"),
-            "server_params": stats.get("params_used"),
+            "query_combinations": stats.get("query_combinations"),
+            "queries": stats.get("queries"),
         }
 
         counts = {
-            "server_total": stats.get("server_total"),            # 服务器报告的 total（若有）
-            "raw_fetched": stats.get("raw_fetched"),              # 你实际抓到的条数（过滤前）
-            "after_filter": stats.get("after_filter"),            # 客户端过滤后
-            "after_rank_cut": len(papers_final),                  # 排序+截断后的条数（返回给前端）
+            "query_combinations": stats.get("query_combinations"),
+            "total_raw_fetched": stats.get("total_raw_fetched"),
+            "total_raw_unique": stats.get("total_raw_unique"),
+            "final_unique_count": stats.get("final_unique_count"),
+            "after_rank_cut": len(papers_final),
         }
 
         result = [p.dict() for p in papers_final]
@@ -67,5 +68,11 @@ async def search(user_query: str = Query(...)):
             "query": user_query,
             "error": str(e),
             "results": [],
-            "counts": {"server_total": None, "raw_fetched": 0, "after_filter": 0, "after_rank_cut": 0},
+            "counts": {
+                "query_combinations": 0,
+                "total_raw_fetched": 0,
+                "total_raw_unique": 0,
+                "final_unique_count": 0,
+                "after_rank_cut": 0
+            },
         }

@@ -23,11 +23,11 @@ from schemas import SearchIntent, PaperMetadata
 TEST_QUERIES = [
     # "找一些2023年到2024年关于大语言模型的论文，发表在NeurIPS或ICLR",
     # "深度学习目标检测综述，CVPR会议，最近三年",
-    "Transformer架构的最新研究，要求有PDF，按引用数排序",
-    "多模态学习在医学图像中的应用",
-    "强化学习与机器人控制，2024年，按时间排序",
-    "图神经网络在推荐系统中的应用，需要开源PDF",
-    "自然语言处理中的few-shot learning",
+    # "Transformer架构的最新研究，要求有PDF，按引用数排序",
+    # "多模态学习在医学图像中的应用",
+    # "强化学习与机器人控制，2024年，按时间排序",
+    # "图神经网络在推荐系统中的应用，需要开源PDF",
+    # "自然语言处理中的few-shot learning",
     "计算机视觉中的对抗样本攻击与防御",
 ]
 
@@ -64,13 +64,13 @@ class TestLogger:
                     "parsed_intent": intent.dict() if intent else None,
                 },
                 "s2_api": {
-                    "query_built": stats.get("query"),
-                    "params_used": stats.get("params_used"),
-                    "server_total": stats.get("server_total"),
-                    "raw_fetched": stats.get("raw_fetched"),
-                    "raw_unique": stats.get("raw_unique"),
-                    "after_filter": stats.get("after_filter"),
-                    "pages": stats.get("pages"),
+                    "query_combinations": stats.get("query_combinations"),
+                    "queries": stats.get("queries"),
+                    "total_raw_fetched": stats.get("total_raw_fetched"),
+                    "total_raw_unique": stats.get("total_raw_unique"),
+                    "final_unique_count": stats.get("final_unique_count"),
+                    "total_pages": stats.get("total_pages"),
+                    "individual_stats": stats.get("individual_stats"),
                 },
                 "ranking_and_cutoff": {
                     "sort_mode": intent.sort_by if intent else None,
@@ -139,16 +139,32 @@ class TestLogger:
                 # S2 API 查询结果
                 f.write("### 2️⃣ S2 API 查询\n\n")
                 s2_data = result.get('s2_api', {})
-                f.write(f"**构建的查询字符串**: `{s2_data.get('query_built')}`\n\n")
-                f.write("**服务器参数**:\n```json\n")
-                f.write(json.dumps(s2_data.get('params_used', {}), ensure_ascii=False, indent=2))
-                f.write("\n```\n\n")
-                f.write("**查询统计**:\n")
-                f.write(f"- 服务器报告总数: `{s2_data.get('server_total')}`\n")
-                f.write(f"- 实际抓取条数: `{s2_data.get('raw_fetched')}`\n")
-                f.write(f"- 去重后条数: `{s2_data.get('raw_unique')}`\n")
-                f.write(f"- 过滤后条数: `{s2_data.get('after_filter')}`\n")
-                f.write(f"- 翻页数: `{s2_data.get('pages')}`\n\n")
+                f.write(f"**查询组合数**: `{s2_data.get('query_combinations')}`\n\n")
+                
+                queries = s2_data.get('queries', [])
+                if queries:
+                    f.write("**执行的查询组合**:\n")
+                    for i, q in enumerate(queries, 1):
+                        f.write(f"{i}. `{q}`\n")
+                    f.write("\n")
+                
+                f.write("**查询统计（汇总）**:\n")
+                f.write(f"- 总抓取条数: `{s2_data.get('total_raw_fetched')}`\n")
+                f.write(f"- 总去重后条数: `{s2_data.get('total_raw_unique')}`\n")
+                f.write(f"- 最终唯一条数: `{s2_data.get('final_unique_count')}`\n")
+                f.write(f"- 总翻页数: `{s2_data.get('total_pages')}`\n\n")
+                
+                # 显示每个查询的详细统计
+                individual_stats = s2_data.get('individual_stats', [])
+                if individual_stats:
+                    f.write("**各查询详细统计**:\n")
+                    for i, stat in enumerate(individual_stats, 1):
+                        f.write(f"\n查询 {i}: `{stat.get('query')}`\n")
+                        f.write(f"- 抓取: {stat.get('raw_fetched')}, ")
+                        f.write(f"去重: {stat.get('raw_unique')}, ")
+                        f.write(f"过滤后: {stat.get('after_filter')}, ")
+                        f.write(f"页数: {stat.get('pages')}\n")
+                    f.write("\n")
                 
                 # 排序和截断
                 f.write("### 3️⃣ 排序与截断\n\n")
@@ -222,7 +238,7 @@ async def test_single_query(query: str, logger: TestLogger):
         
         # 2. 调用 S2 API 搜索
         print("⏳ 调用 S2 API 搜索...")
-        papers, stats = await search_papers(intent)
+        papers, batch, stats = await search_papers(intent)
         print(f"✓ 搜索完成: 找到 {len(papers)} 篇论文")
         
         # 3. 排序和截断
@@ -243,9 +259,10 @@ async def test_single_query(query: str, logger: TestLogger):
         
         # 5. 打印简要信息
         print(f"\n📊 统计:")
-        print(f"  - 服务器总数: {stats.get('server_total')}")
-        print(f"  - 抓取条数: {stats.get('raw_fetched')}")
-        print(f"  - 过滤后: {stats.get('after_filter')}")
+        print(f"  - 查询组合数: {stats.get('query_combinations')}")
+        print(f"  - 总抓取条数: {stats.get('total_raw_fetched')}")
+        print(f"  - 总去重后: {stats.get('total_raw_unique')}")
+        print(f"  - 最终唯一: {stats.get('final_unique_count')}")
         print(f"  - 最终返回: {len(papers_final)}")
         
         if papers_final:
