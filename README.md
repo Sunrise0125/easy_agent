@@ -244,6 +244,58 @@ A：浏览器/日志里看到的是 URL 编码，正常。实际服务会按 UTF
 
 ---
 
+## 测试脚本
+
+项目提供了三个测试脚本，用于验证系统功能并记录详细的中间过程：
+
+### 1. 快速验证（推荐）
+
+```powershell
+python test_example.py
+```
+
+运行单个测试查询，快速验证 LLM 解析、S2 搜索、排序等功能是否正常。
+
+### 2. 完整测试（直接调用版本）
+
+```powershell
+python test_search.py
+# 或使用便捷脚本
+.\run_test.ps1
+```
+
+- ✅ 无需启动服务
+- ✅ 记录 LLM 原始响应和解析结果
+- ✅ 记录 S2 API 查询参数和统计
+- ✅ 生成详细的 JSON 和 Markdown 测试报告
+
+### 3. API 端点测试（HTTP 版本）
+
+```powershell
+# 先启动服务
+python main.py
+
+# 在另一个终端运行测试
+python test_search_http.py
+# 或
+.\run_test.ps1 -http
+```
+
+- ✅ 测试完整的 API 端点
+- ✅ 模拟真实的客户端调用
+- ⚠️ 需要先启动 FastAPI 服务
+
+### 测试报告
+
+所有测试结果保存在 `test_results/` 目录：
+
+- **JSON 格式**：完整的结构化数据，包含所有中间过程
+- **Markdown 格式**：易读的格式化报告
+
+详细说明请参考 [TEST_README.md](TEST_README.md)。
+
+---
+
 ## 开发调试建议
 
 * 将 `.env` 中 `LOG_LEVEL=DEBUG`，观察
@@ -251,7 +303,8 @@ A：浏览器/日志里看到的是 URL 编码，正常。实际服务会按 UTF
   * `[S2 BULK PARAMS]` 相关日志
   * `server_total/raw_fetched/after_filter` 计数
 * 若 LLM 输出 JSON 被代码块包裹（```json），请确保 `llm_parser.py` 的提示词**明确禁止** Markdown 代码块（项目中已处理）。
-* 若想快速回显“解析后的检索词串”，看返回体中的 `api_params.s2_query_built`。
+* 若想快速回显"解析后的检索词串"，看返回体中的 `api_params.s2_query_built`。
+* 使用测试脚本快速验证功能：`python test_example.py`
 
 ---
 

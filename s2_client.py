@@ -26,8 +26,8 @@ import calendar
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
 
-from .config import S2_BASE, S2_API_KEY, S2_RPS
-from .schemas import PaperMetadata, SearchIntent
+from config import S2_BASE, S2_API_KEY, S2_RPS
+from schemas import PaperMetadata, SearchIntent
 
 logger = logging.getLogger("paper_survey.s2")
 
@@ -70,9 +70,9 @@ def _quote_if_needed(s: str) -> str:
 
 def _build_query(intent: SearchIntent) -> str:
     """
-    将 any_groups（AND-of-OR）转换为“宽松关键词串”：
+    将 any_groups（AND-of-OR）转换为"宽松关键词串"：
     - 组内同义词与组间都用空格直接拼接（S2 query 不保证布尔语义，宽松召回更稳）；
-    - 作者/venue 名称也拼入 query 作为召回提示（严格筛选交由服务端参数 + 客户端核验）；
+    - 仅包含主题关键词，作者/venue 通过服务端参数进行精确筛选；
     - 留空则使用 "*"。
     """
     toks: List[str] = []
@@ -82,12 +82,6 @@ def _build_query(intent: SearchIntent) -> str:
         for term in group:
             if term and str(term).strip():
                 toks.append(_quote_if_needed(term))
-
-    # 作者/场馆作为提示词加入
-    if intent.author:
-        toks.append(_quote_if_needed(intent.author))
-    if intent.venues:
-        toks.extend([_quote_if_needed(v) for v in intent.venues if v and str(v).strip()])
 
     # 去重（保序）
     seen = set()

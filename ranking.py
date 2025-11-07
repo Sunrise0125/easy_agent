@@ -10,7 +10,7 @@ try:
 except Exception:
     LOCAL_TZ = timezone(timedelta(hours=8))
 
-from .schemas import PaperMetadata,TOP_VENUES
+from schemas import PaperMetadata, TOP_VENUES
 
 
 # ---------- 场馆打分 ----------

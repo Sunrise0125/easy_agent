@@ -1,17 +1,17 @@
 # paper_survey/llm_parser.py
-import os, json, logging, re
+import json, logging, re
 from datetime import datetime
 from typing import Any, Dict, List
 from openai import OpenAI
-from .schemas import SearchIntent ,TOP_VENUES #, CANONICAL_FOS
-
+from schemas import SearchIntent, TOP_VENUES  #, CANONICAL_FOS
+from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
 
 
 logger = logging.getLogger("paper_survey.llm_parser")
 
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1"),
+    api_key=OPENAI_API_KEY,
+    base_url=OPENAI_BASE_URL,
 )
 
 # FOS_ALLOWED = ", ".join(CANONICAL_FOS)
@@ -25,7 +25,7 @@ SYSTEM = (
     "请尽可能从用户输入中提取所有信息，并遵守以下规则：\n"
     "\n"
     "【检索查询提取（必填）】\n"
-    "- any_groups: string[][]   # AND-of-OR。同一子数组内为同义词“或”关系，子数组之间为“且”关系。\n"
+    "- any_groups: string[]   # AND-of-OR。同一子数组内为同义词“或”关系，子数组之间为“且”关系。\n"
     "- 统一输出为英文可检索短语短句；多词短语无需手动加引号；每组 1~3个词为宜；至少给出 1 组。\n"
     "  例：[[\"large language models\",\"LLM\",\"foundation models\"],[\"code generation\",\"program synthesis\"]]\n"
     "\n"
@@ -158,7 +158,7 @@ async def parse_user_intent(user_input: str) -> SearchIntent:
         {"role": "user", "content": f"当前日期：{current_date}\n用户输入：{user_input}"},
     ]
     resp = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
+        model=OPENAI_MODEL,
         messages=messages,
         temperature=0.2,
     )

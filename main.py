@@ -2,12 +2,13 @@
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from .llm_parser import parse_user_intent
-from .s2_client import search_papers
-from .ranking import rank_papers
-from .schemas import PaperMetadata  # 和可选的 SearchResponse
-import json ,os
-from .logging_setup import setup_logging
+import config  # 确保 .env 文件被加载
+from llm_parser import parse_user_intent
+from s2_client import search_papers
+from ranking import rank_papers
+from schemas import PaperMetadata  # 和可选的 SearchResponse
+import json, os
+from logging_setup import setup_logging
 
 
 setup_logging(os.getenv("LOG_LEVEL", "DEBUG"))
