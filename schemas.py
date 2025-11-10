@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 #     "Philosophy", "Linguistics", "Agricultural and Food Sciences"
 # ]
 
+
+#用于识别用于提及的顶级会议和期刊简称，以及用来ranking加分
 TOP_VENUES = {
     # ML/AI
     "NeurIPS", "NIPS", "ICLR", "ICML", "AAAI", "IJCAI", "JMLR",

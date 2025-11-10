@@ -39,7 +39,7 @@ async def simple_test():
         
         # 2. S2 API 搜索
         print("\n⏳ 步骤2: 调用 Semantic Scholar API 搜索...")
-        papers, batch, stats = await search_papers(intent)
+        papers, stats = await search_papers(intent)
         print(f"✓ 搜索完成")
         print(f"  - 查询组合数: {stats.get('query_combinations')}")
         print(f"  - 总抓取条数: {stats.get('total_raw_fetched')}")

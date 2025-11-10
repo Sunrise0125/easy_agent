@@ -23,12 +23,17 @@ from schemas import SearchIntent, PaperMetadata
 TEST_QUERIES = [
     # "找一些2023年到2024年关于大语言模型的论文，发表在NeurIPS或ICLR",
     # "深度学习目标检测综述，CVPR会议，最近三年",
+    # "深度学习目标检测综述，最近三年",
+    # "深度学习目标检测综述",
     # "Transformer架构的最新研究，要求有PDF，按引用数排序",
     # "多模态学习在医学图像中的应用",
     # "强化学习与机器人控制，2024年，按时间排序",
     # "图神经网络在推荐系统中的应用，需要开源PDF",
     # "自然语言处理中的few-shot learning",
-    "计算机视觉中的对抗样本攻击与防御",
+    # "计算机视觉中的对抗样本攻击与防御",
+    # "Could you give me examples of research that developed datasets for molecular force field prediction?"
+    "Which works are focused on online unsupervised skill discovery for hierarchical RL?"
+    
 ]
 
 
@@ -81,7 +86,7 @@ class TestLogger:
                     {
                         "title": p.title,
                         "authors": p.authors,
-                        "year": p.year,
+                        "publication_date": p.publication_date,
                         "venue": p.journal,
                         "citations": p.citations,
                         "influential_citations": p.influential_citations,
@@ -238,7 +243,7 @@ async def test_single_query(query: str, logger: TestLogger):
         
         # 2. 调用 S2 API 搜索
         print("⏳ 调用 S2 API 搜索...")
-        papers, batch, stats = await search_papers(intent)
+        papers, stats = await search_papers(intent)
         print(f"✓ 搜索完成: 找到 {len(papers)} 篇论文")
         
         # 3. 排序和截断

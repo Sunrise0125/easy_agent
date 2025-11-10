@@ -30,7 +30,7 @@ async def search(user_query: str = Query(...)):
         # logger.info(f"[INTENT] {intent.dict()}")
 
         # 2) 调 S2 + 过滤（拿回统计）
-        papers, batch, stats = await search_papers(intent)
+        papers, stats = await search_papers(intent)
 
         # 3) 排序 + 截断
         papers_sorted = rank_papers(papers, mode=intent.sort_by)

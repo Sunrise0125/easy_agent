@@ -550,4 +550,4 @@ async def search_papers(intent: SearchIntent) -> Tuple[List[PaperMetadata], List
         f"total_pages={total_pages}"
     )
     
-    return all_collected, last_batch, combined_stats
+    return all_collected, combined_stats
