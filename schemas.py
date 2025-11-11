@@ -23,12 +23,21 @@ TOP_VENUES = {
     "SIGIR", "WWW", "KDD", "VLDB", "SIGMOD", "ICDE",
     # 其它可扩展...
 }
-
-
+#可选的检索来源
+FOS_TO_SOURCES = {
+    "computer science": ["s2","openalex","arxiv"],
+    "physics":          ["s2","openalex","arxiv"],
+    "mathematics":      ["s2","openalex","arxiv"],
+    "biomedicine":      ["s2","pubmed","eupmc"],
+    "medicine":         ["s2","pubmed","eupmc"],
+    "chemistry":        ["s2","openalex"],
+    # … 可继续扩展 …
+}
 class SearchIntent(BaseModel):
     # 查询语义
     any_groups: List[List[str]] = Field(default_factory=list)  # AND-of-OR，同义词组
-
+    enabled_sources: Optional[List[str]] =  Field(default_factory=lambda: ["s2"])
+    # 允许的值：["s2","openalex","crossref","arxiv","pubmed","eupmc"]
     # 约束（全部映射到 bulk 的服务端过滤）
     venues: List[str] = Field(default_factory=list)            # 只允许白名单的简称，如: ["ICLR","NeurIPS","CVPR"]
     author: Optional[str] = None                               # 精确短语匹配，仍建议作为 must_terms 追加
@@ -47,17 +56,18 @@ class SearchIntent(BaseModel):
 
 class PaperMetadata(BaseModel):
     title: str
-    authors: List[str] = Field(default_factory=list)
+    authors: List[str] = Field(default_factory=list)   #还需要得到作者的谷歌学术的被引用数
+    first_author_hindex :Optional[int] = None  #作者的知名信息，H-index 或 被引用数 
     abstract: Optional[str] = None
     year: Optional[int] = None
     doi: Optional[str] = None
-    journal: Optional[str] = None
+    journal: Optional[str] = None                                    #发表期刊
     url: Optional[str] = None
     citations: Optional[int] = None
-    influential_citations: Optional[int] = None
+    influential_citations: Optional[int] = None                 #有影响力引用数
     open_access: bool = False
     publication_types: List[str] = Field(default_factory=list)
-    publication_date: Optional[str] = None
+    publication_date: Optional[str] = None                   #发表时间
     fields_of_study: List[str] = Field(default_factory=list)
 
 class SearchResponse(BaseModel):

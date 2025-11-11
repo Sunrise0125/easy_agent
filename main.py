@@ -4,7 +4,8 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 import config  # 确保 .env 文件被加载
 from llm_parser import parse_user_intent
-from s2_client import search_papers
+#from s2_client import search_papers
+from search_multi import search_papers
 from ranking import rank_papers
 from schemas import PaperMetadata  # 和可选的 SearchResponse
 import json, os
@@ -31,7 +32,7 @@ async def search(user_query: str = Query(...)):
 
         # 2) 调 S2 + 过滤（拿回统计）
         papers, stats = await search_papers(intent)
-
+      # papers,stats = await search_multi(intent, papers)
         # 3) 排序 + 截断
         papers_sorted = rank_papers(papers, mode=intent.sort_by)
         papers_final = papers_sorted[: intent.max_results]

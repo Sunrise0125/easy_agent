@@ -14,25 +14,38 @@ from pathlib import Path
 
 # 导入项目模块
 from llm_parser import parse_user_intent
-from s2_client import search_papers
+#rom s2_client import search_papers
+from search_multi import search_papers
 from ranking import rank_papers
 from schemas import SearchIntent, PaperMetadata
+from fill_author_citation_info import fill_first_author_hindex_async
 
 
 # ========== 测试用例定义 ==========
 TEST_QUERIES = [
-    # "找一些2023年到2024年关于大语言模型的论文，发表在NeurIPS或ICLR",
+    #"找一些2022到2023关于大语言模型的论文，发表在NeurIPS或ICLR",
     # "深度学习目标检测综述，CVPR会议，最近三年",
     # "深度学习目标检测综述，最近三年",
     # "深度学习目标检测综述",
     # "Transformer架构的最新研究，要求有PDF，按引用数排序",
     # "多模态学习在医学图像中的应用",
-    # "强化学习与机器人控制，2024年，按时间排序",
+    #"强化学习与机器人控制，2025年", #
     # "图神经网络在推荐系统中的应用，需要开源PDF",
     # "自然语言处理中的few-shot learning",
     # "计算机视觉中的对抗样本攻击与防御",
     # "Could you give me examples of research that developed datasets for molecular force field prediction?"
-    "Which works are focused on online unsupervised skill discovery for hierarchical RL?"
+    # Which works are focused on online unsupervised skill discovery for hierarchical RL?"
+     ## 物理、化学、生物相关检索
+    "材料科学中石墨烯的储能应用综述，最近五年",
+    "蛋白质结构预测的最新进展，要求有PDF",
+    "量子计算在材料模拟中的应用研究",
+    # "CRISPR 基因编辑技术的安全性评估",
+    # "单细胞测序在肿瘤微环境研究中的应用",
+    # "钙钛矿太阳能电池稳定性问题及改进方法",
+    # "深度学习在分子动力学模拟中的应用，2023到2025",
+    # "小分子药物发现中的图神经网络方法",
+    # "抗生素耐药性机制研究，综述类文章",
+    # "蛋白质-蛋白质相互作用预测模型的最新研究，按引用数排序",
     
 ]
 
@@ -66,7 +79,7 @@ class TestLogger:
             result.update({
                 "llm_parsing": {
                     "raw_response": llm_raw_response,
-                    "parsed_intent": intent.dict() if intent else None,
+                    "parsed_intent": intent.model_dump() if intent else None,
                 },
                 "s2_api": {
                     "query_combinations": stats.get("query_combinations"),
@@ -76,6 +89,12 @@ class TestLogger:
                     "final_unique_count": stats.get("final_unique_count"),
                     "total_pages": stats.get("total_pages"),
                     "individual_stats": stats.get("individual_stats"),
+                    "total_after_filter_s2": stats.get("total_after_filter_s2"),
+                    "total_after_filter_openalex": stats.get("total_after_filter_openalex"),
+                    "total_after_filter_crossref": stats.get("total_after_filter_crossref"),
+                    "total_after_filter_arxiv": stats.get("total_after_filter_arxiv"),
+                    "total_after_filter_pubmed": stats.get("total_after_filter_pubmed"),
+                    "total_after_filter_eupmc": stats.get("total_after_filter_eupmc"),
                 },
                 "ranking_and_cutoff": {
                     "sort_mode": intent.sort_by if intent else None,
@@ -86,10 +105,12 @@ class TestLogger:
                     {
                         "title": p.title,
                         "authors": p.authors,
-                        "publication_date": p.publication_date,
-                        "venue": p.journal,
-                        "citations": p.citations,
-                        "influential_citations": p.influential_citations,
+                        "first_author_hindex": p.first_author_hindex,  #作者的知名信息
+                        "year": p.year,
+                        "publication_date": p.publication_date,  #
+                        "venue": p.journal,   #
+                        "citations": p.citations,   
+                        "influential_citations": p.influential_citations,   #
                         "url": p.url,
                         "has_pdf": p.open_access,
                     }
@@ -157,6 +178,14 @@ class TestLogger:
                 f.write(f"- 总抓取条数: `{s2_data.get('total_raw_fetched')}`\n")
                 f.write(f"- 总去重后条数: `{s2_data.get('total_raw_unique')}`\n")
                 f.write(f"- 最终唯一条数: `{s2_data.get('final_unique_count')}`\n")
+                 # 新增：每来源 after_filter 与展开字段
+                f.write("**过滤后（来源内）统计**:\n")
+                f.write(f"- S2 after_filter: `{s2_data.get('total_after_filter_s2')}`\n")
+                f.write(f"- OpenAlex after_filter: `{s2_data.get('total_after_filter_openalex')}`\n")
+                f.write(f"- Crossref after_filter: `{s2_data.get('total_after_filter_crossref')}`\n")
+                f.write(f"- Arxiv after_filter: `{s2_data.get('total_after_filter_arxiv')}`\n")
+                f.write(f"- PubMed after_filter: `{s2_data.get('total_after_filter_pubmed')}`\n")
+                f.write(f"- Europe PMC after_filter: `{s2_data.get('total_after_filter_eupmc')}`\n\n")
                 f.write(f"- 总翻页数: `{s2_data.get('total_pages')}`\n\n")
                 
                 # 显示每个查询的详细统计
@@ -246,10 +275,12 @@ async def test_single_query(query: str, logger: TestLogger):
         papers, stats = await search_papers(intent)
         print(f"✓ 搜索完成: 找到 {len(papers)} 篇论文")
         
-        # 3. 排序和截断
+        # 3. 排序和截断 
         print("⏳ 排序和截断...")
         papers_sorted = rank_papers(papers, mode=intent.sort_by)
-        papers_final = papers_sorted[:intent.max_results]
+        papers_final_without_author_info = papers_sorted[:intent.max_results]
+        print(f"✓ 截断完成,开始填充作者引用信息...")
+        papers_final = await fill_first_author_hindex_async(papers_final_without_author_info)
         print(f"✓ 最终返回: {len(papers_final)} 篇论文")
         
         # 4. 记录结果
