@@ -1,317 +1,220 @@
-下面是一份干净、可落地的 **README.md**，基于你当前的目录与启动方式（`pwsh .\start.ps1 -EnvFile "paper_survey\.env"`）。直接保存为 `README.md` 即可。
+# PaperFinder Agent — 说明文档（中文）
+
+一个轻量的多来源论文检索服务（基于 FastAPI）：把自然语言查询解析成结构化意图，向多家学术接口发起检索，统一清洗与去重，排序后返回简洁 JSON 结果。
+
+## ✨ 功能概览
+
+* **LLM 意图解析** → 将用户文本转为 `SearchIntent`
+* **多来源检索**（始终包含 **S2**，可选 OpenAlex / Crossref / arXiv / PubMed / EuropePMC）
+* **优先服务端过滤**（日期 / 期刊会议 / 文献类型 / OA 等）
+* **统一客户端兜底过滤**（作者包含、场馆同义词规整、日期到日、最小影响力引用、类型交集）
+* **跨来源去重**（键顺序：DOI → URL → 规范化标题+年份）
+* **排序**（相关性 / 引用数 / 发表日期）
+* **丰富统计**：逐来源抓取/去重/过滤计数、选用来源清单等
 
 ---
 
-# Paper Survey Agent
-
-一个基于 **FastAPI** 的学术论文检索服务：
-**自然语言 →（LLM 解析）→ Semantic Scholar Bulk API 检索 → 服务器端/本地过滤 → 排序与返回**。
-适合“按主题 + 时间窗 + 场馆/作者 + PDF 可用性 +（可选）引用阈值”的组合检索。
-
----
-
-## 目录结构
+## 🗂 目录结构
 
 ```
 paper_survey/
-├─ .env                   # 你的环境变量（本地）
-├─ .env.example           # 示例环境变量
-├─ config.py              # 读取 .env 的配置中心
-├─ llm_parser.py          # LLM 将自然语言解析为结构化 SearchIntent
-├─ logging_setup.py       # 日志格式与级别
-├─ main.py                # FastAPI 入口与 /search 路由
-├─ ranking.py             # 论文排序（包含“按日”粒度新鲜度）
-├─ s2_client.py           # S2 Bulk API 调用、服务端参数构造、本地兜底过滤
-├─ schemas.py             # Pydantic 模型（SearchIntent / PaperMetadata / SearchResponse）
-├─ start.ps1              # Windows 启动脚本（加载 .env、启动 Uvicorn）
-└─ requirements.txt       # 依赖
+├─ main.py                # FastAPI 接口 (/search)
+├─ search_multi.py        # 多来源聚合 + 去重 + 过滤
+├─ s2_client.py           # 单来源适配器（S2/OpenAlex/Crossref/等）
+├─ llm_parser.py          # 自然语言 → SearchIntent
+├─ ranking.py             # 排序与截断
+├─ schemas.py             # Pydantic 模型：SearchIntent, PaperMetadata
+├─ author_hindex.py       # （可选）首作者 h-index 填充（OpenAlex）
+├─ test_search.py         # 批量测试：产出 JSON/Markdown 报告
+├─ logging_setup.py       # 日志配置
+├─ config.py              # 环境变量加载
+└─ requirements.txt
 ```
 
 ---
 
-## 运行要求
+## ⚙️ 环境与依赖
 
-* Python ≥ 3.9（推荐 3.10/3.11）
-* Windows PowerShell 7+（使用提供的 `start.ps1`）
-* 能访问 `https://api.semanticscholar.org/graph/v1`
-* （强烈推荐）申请 **Semantic Scholar API Key**（提升稳定性和页容量）
+* Python **3.10+**
 
----
+安装依赖：
 
-## 安装依赖
-
-```powershell
-# 建议在虚拟环境内执行
+```bash
 pip install -r requirements.txt
 ```
 
+最小依赖示例（`requirements.txt`）：
+
+```
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+python-dotenv
+```
+
+如使用可选模块：
+
+```
+openai            # 若 llm_parser 使用 OpenAI
+scholarly         # 如需 Google Scholar（不推荐生产）
+```
+
 ---
 
-## 配置 .env
+## 🔐 环境变量
 
-参考 `.env.example` 填写到 `paper_survey\.env`（示例）：
+在项目根目录创建 `.env`（或直接设置环境变量）：
 
-```ini
-# === Semantic Scholar ===
+```
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4o-mini            # 与 llm_parser.py 保持一致
+S2_API_KEY=...                      # Semantic Scholar 可选但推荐
 S2_BASE=https://api.semanticscholar.org/graph/v1
-S2_API_KEY=YOUR_S2_API_KEY   # 可为空；为空时 bulk 仍可用，但页容量/稳定性受限
-S2_RPS=1                     # 每秒请求速率（建议 1）
-
-# === LLM（DeepSeek 作为 OpenAI 兼容）===
-OPENAI_API_KEY=YOUR_DEEPSEEK_KEY
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-LLM_MODEL=deepseek-chat
-
-# === 服务 ===
-HOST=127.0.0.1
-PORT=8000
+S2_RPS=2                            # S2 限速（req/s）
 LOG_LEVEL=INFO
 ```
 
-> 说明
->
-> * `S2_API_KEY` 可选，但**强烈建议**设置；有 key 时 `bulk` 端点能稳定排序/分页。
-> * 我们使用 OpenAI 兼容 SDK 访问 DeepSeek：`OPENAI_BASE_URL` 与 `OPENAI_API_KEY` 必填。
-> * `LLM_MODEL` 改成你实际在 `llm_parser.py` 使用的模型名（默认 `deepseek-chat`）。
+> 无 `S2_API_KEY` 亦可运行，但分页与速率限制更保守。
 
 ---
 
-## 启动服务（Windows）
-
-```powershell
-pwsh .\start.ps1 -EnvFile "paper_survey\.env"
-```
-
-启动后默认监听：`http://127.0.0.1:8000`
-
----
-
-## 如何调用
-
-### 浏览器直接访问
-
-把自然语言 URL 编码后拼到 `user_query`：
-
-```
-http://127.0.0.1:8000/search?user_query=%E8%BF%91%E4%B8%89%E5%B9%B4+code+generation+LLM+NeurIPS+ICLR+%E5%BC%80%E6%BA%90PDF
-```
-
-### curl 示例
+## ▶️ 启动
 
 ```bash
-curl "http://127.0.0.1:8000/search?user_query=近三年 代码生成 大模型 ICLR 或 NeurIPS 需要开源PDF"
+uvicorn main:app --reload --port 8000
 ```
 
-> Tips：命令行看到的“中文乱码”是**URL 编码**，不是服务异常。
+打开：`http://localhost:8000/docs`
 
 ---
 
-## 请求到响应的完整流程
+## 🔎 接口说明
 
-1. **LLM 解析（`llm_parser.py`）**
+### `GET /search?user_query=...`
 
-   * 将用户自然语言解析为结构化的 `SearchIntent`：
-
-     * `any_groups`: AND-of-OR 主题词组（同义词组内“或”，组与组之间“与”）
-     * `venues`: 指定会议/期刊（白名单简写，如 `ICLR, NeurIPS, CVPR`）
-     * `author`: 作者名（用于召回 + 本地严格匹配）
-     * `date_start/date_end`: 统一到 `YYYY-MM-DD`（支持“近 N 天/周/月/年/半年”的相对时间）
-     * `must_have_pdf`: 仅要开放 PDF
-     * `publication_types`: `["JournalArticle","Conference","Review"]`（内部通过服务端/本地映射）
-     * `min_influential_citations`: 最小“有影响力引用数”（**本地过滤**）
-     * `max_results`、`sort_by`（`publicationDate`/`citationCount`/`relevance`）
-
-2. **S2 检索（`s2_client.py`）**
-
-   * **仅使用 /graph/v1/paper/search/bulk**
-   * 构造 query：将 `any_groups` 组装为 AND-of-OR 的“关键词提示串”（组内 `OR`，组间空格连接）。
-
-     > 注意：S2 的 query 是关键词匹配，布尔语法支持有限，上述构造是“增强召回”的**最佳实践**，真正精准过滤交给服务端参数与本地兜底过滤。
-   * **服务端过滤/排序（尽可能交给 S2）**：
-
-     * `publicationDateOrYear=<start>:<end>`（支持 `YYYY`/`YYYY-MM`/`YYYY-MM-DD`）
-     * `publicationTypes=Review` 或 `JournalArticle,Conference`
-     * `openAccessPdf=true`
-     * `venue=ICLR,NeurIPS,...`（服务端不够稳，本地再核）
-     * `sort=publicationDate | citationCount`（bulk 不保证 `relevance`，`relevance` 建议交给本地排序）
-
-3. **本地兜底过滤（`s2_client.py`）**
-
-   * 作者名包含/等值匹配
-   * 场馆名同义词/规整化匹配（`VENUE_SYNONYMS`）
-   * 文献类型（缺失视为 research 通过）
-   * PDF 开放性
-   * **时间窗精确到“日”**（优先 `publication_date`，无则用 `year` 的 7/1 近似）
-   * 最小“有影响力引用数”阈值
-
-4. **排序（`ranking.py`）**
-
-   * `publicationDate`：按**天级新鲜度**（越新越靠前）；同分用场馆/影响力引用打破
-   * `relevance`：内置“重要性”加权（可自定义，你的版本偏向新鲜度+场馆+有影响力引用）
-   * `citationCount`：按总引用降序
-   * **最终按 `max_results` 截断**
-
-5. **响应（`main.py`）**
-
-   * `results`: 返回排序+截断后的论文
-   * `batch`: 返回“最后一页原始转换样本”（便于调试）
-   * `api_params`: 返回用于 S2 的真实参数（便于复现与排错）
-   * `counts`: 返回四个计数
-
-     * `server_total`: S2 报告的总量（如有）
-     * `raw_fetched`: 实际抓到条数（过滤前）
-     * `after_filter`: 本地过滤后条数
-     * `after_rank_cut`: 排序+截断后的条数（即前端看到的数量）
-
----
-
-## API 说明
-
-### `GET /search`
-
-* **Query**: `user_query`（自然语言）
-* **Response**（关键字段）：
-
-  * `normalized_intent`: 解析后的 `SearchIntent`
-  * `api_params`: 实际用于 S2 的参数（含 `s2_query_built`）
-  * `counts`: 服务端/本地过滤前后的统计
-  * `results`: 最终论文列表（字段见 `PaperMetadata`）
-  * `batch`: 最后一页的原始转换（未过滤，用于对照/调试）
-
-示例：
+**输入**：自然语言字符串。LLM 会产出类似结构：
 
 ```json
 {
-  "query": "find me the most cited papers on large language models for code generation in the last 6 months",
+  "any_groups": [["reinforcement learning"], ["robot control"]],
+  "enabled_sources": ["s2","openalex","arxiv"],   // LLM 选择；后端强制包含 s2
+  "venues": ["ICLR","NeurIPS"],
+  "author": null,
+  "date_start": "2024-01-01",
+  "date_end": "2024-12-31",
+  "must_have_pdf": false,
+  "publication_types": [],
+  "min_influential_citations": null,
+  "max_results": 10,
+  "sort_by": "publicationDate"                   // 或 "citationCount" | "relevance"
+}
+```
+
+**返回（节选）：**
+
+```json
+{
+  "query": "强化学习与机器人控制，2024年，按时间排序",
   "normalized_intent": { ... },
   "api_params": {
     "endpoint": "graph/v1/paper/search/bulk",
-    "s2_query_built": "(\"large language models\" OR LLM) (\"code generation\" OR \"neural code generation\")",
-    "server_params": {
-      "publicationDateOrYear": "2025-05-05:2025-11-05",
-      "publicationTypes": "JournalArticle,Conference",
-      "openAccessPdf": "true",
-      "venue": "ICLR,NeurIPS",
-      "sort": "citationCount",
-      "limit": 50,
-      "offset": 0
-    }
+    "query_combinations": 2,
+    "queries": ["[s2] \"reinforcement learning\" \"robot control\"", "..."]
   },
   "counts": {
-    "server_total": 124,
-    "raw_fetched": 100,
-    "after_filter": 22,
+    "query_combinations": 2,
+    "total_raw_fetched": 310,
+    "total_raw_unique": 260,
+    "final_unique_count": 120,
     "after_rank_cut": 10
   },
-  "results": [ ... ],
-  "batch": [ ... ]
+  "stats": {
+    "selected_sources": ["s2","openalex","arxiv"],
+    "per_page": 100,
+    "total_pages": 5,
+    "total_after_filter": 140,
+    "per_source_after_filter": { "s2": 90, "openalex": 35, "arxiv": 15 },
+    "total_after_filter_s2": 90,
+    "total_after_filter_openalex": 35,
+    "total_after_filter_crossref": 0,
+    "total_after_filter_arxiv": 15,
+    "total_after_filter_pubmed": 0,
+    "total_after_filter_eupmc": 0,
+    "individual_stats": [
+      {"source":"s2","raw_fetched":200,"raw_unique":160,"after_filter":90,"pages":4},
+      {"source":"openalex","raw_fetched":80,"raw_unique":70,"after_filter":35,"pages":1},
+      {"source":"arxiv","raw_fetched":30,"raw_unique":30,"after_filter":15,"pages":1}
+    ]
+  },
+  "results": [
+    {
+      "title": "...",
+      "authors": ["Alice", "Bob"],
+      "publication_date": "2024-05-07",
+      "venue": "ICLR",
+      "citations": 12,
+      "influential_citations": 1,
+      "url": "https://...",
+      "has_pdf": true
+    }
+  ]
 }
 ```
 
 ---
 
-## 日志
+## 🧠 来源选择逻辑
 
-* 级别通过 `.env` 的 `LOG_LEVEL` 控制（`DEBUG/INFO/WARNING`）。
-* `s2_client.py` 会输出：端点参数、分页、统计计数（`server_total/raw_fetched/after_filter/pages`）。
-
----
-
-## 常见问题（FAQ）
-
-**Q1：中文“乱码”？**
-A：浏览器/日志里看到的是 URL 编码，正常。实际服务会按 UTF-8 收到中文。
-
-**Q2：为什么会 0 条？**
-
-* 关键字过窄，或布尔写法被 S2 忽略 → 尝试扩大 `any_groups`，减少过细短语；
-* 时间窗过窄（例如近 7 天）→ 适当放宽；
-* 强约束过多（同时要求场馆+作者+PDF+窄时间）→ 逐项放宽定位问题；
-* 无 API Key 时，bulk 稳定性与页容量下降 → 建议配置 `S2_API_KEY`。
-
-**Q3：`relevance` 排序是否服务端支持？**
-
-* bulk 端点通常保证 `publicationDate` 与 `citationCount`；`relevance` 并不稳定。
-* 推荐使用本地的 `relevance/importance` 逻辑（见 `ranking.py`）。
-
-**Q4：如何扩充会议/期刊同义词？**
-
-* 修改 `s2_client.py` 的 `VENUE_SYNONYMS`。
-
-**Q5：如何调整“新鲜度”权重？**
-
-* 在 `ranking.py` 修改 `importance()` 或“按日新鲜度”的衰减参数。
+* LLM 输出 `enabled_sources`（1–3 个，**必须包含 `s2`**）
+* 支持来源：`s2`, `openalex`, `crossref`, `arxiv`, `pubmed`, `eupmc`
+* 后端会强制并保留 `s2`，并按选择项实际检索
 
 ---
 
-## 测试脚本
+## 🧹 过滤与去重
 
-项目提供了三个测试脚本，用于验证系统功能并记录详细的中间过程：
+* **服务端过滤**：S2 / OpenAlex / Crossref / EuropePMC 支持部分参数
+* **客户端兜底**（三/多来源统一标准）：
 
-### 1. 快速验证（推荐）
+  * 作者子串匹配
+  * 场馆同义词规整（NeurIPS/NIPS/全称等）
+  * 日期范围（精确到日）
+  * 最小影响力引用数
+  * 文献类型交集
+* **去重优先级**：DOI → URL → 规范化(标题)+年份（跨来源统一）
 
-```powershell
-python test_example.py
-```
+---
 
-运行单个测试查询，快速验证 LLM 解析、S2 搜索、排序等功能是否正常。
+## 🧮 排序
 
-### 2. 完整测试（直接调用版本）
+`ranking.py` 支持：
 
-```powershell
+* `"relevance"`（默认）
+* `"citationCount"`
+* `"publicationDate"`
+
+---
+
+## 🧪 批量测试
+
+```bash
 python test_search.py
-# 或使用便捷脚本
-.\run_test.ps1
 ```
 
-- ✅ 无需启动服务
-- ✅ 记录 LLM 原始响应和解析结果
-- ✅ 记录 S2 API 查询参数和统计
-- ✅ 生成详细的 JSON 和 Markdown 测试报告
-
-### 3. API 端点测试（HTTP 版本）
-
-```powershell
-# 先启动服务
-python main.py
-
-# 在另一个终端运行测试
-python test_search_http.py
-# 或
-.\run_test.ps1 -http
-```
-
-- ✅ 测试完整的 API 端点
-- ✅ 模拟真实的客户端调用
-- ⚠️ 需要先启动 FastAPI 服务
-
-### 测试报告
-
-所有测试结果保存在 `test_results/` 目录：
-
-- **JSON 格式**：完整的结构化数据，包含所有中间过程
-- **Markdown 格式**：易读的格式化报告
-
-详细说明请参考 [TEST_README.md](TEST_README.md)。
+输出 `test_results/` 下的 JSON 与 Markdown 报告：包含 LLM 解析、逐来源统计、Top 结果等。
 
 ---
 
-## 开发调试建议
+## 🩺 常见问题
 
-* 将 `.env` 中 `LOG_LEVEL=DEBUG`，观察
-
-  * `[S2 BULK PARAMS]` 相关日志
-  * `server_total/raw_fetched/after_filter` 计数
-* 若 LLM 输出 JSON 被代码块包裹（```json），请确保 `llm_parser.py` 的提示词**明确禁止** Markdown 代码块（项目中已处理）。
-* 若想快速回显"解析后的检索词串"，看返回体中的 `api_params.s2_query_built`。
-* 使用测试脚本快速验证功能：`python test_example.py`
+* **S2 400 “too many hits”**：查询过宽。请增加短语引号、限制日期/场馆，或加关键词组；代码也会跳过 `"*"` 这类无意义组合。
+* **arXiv 时间过滤**：arXiv 不直接支持服务端按发表时间过滤，本项目在客户端做日期兜底。
+* **不同来源引用数不一致**：正常现象，索引更新时间与统计口径不同。
+* **首作者 h-index 为 null**：OpenAlex 可能无匹配或无统计。代码可按需回落为 `0`。
 
 ---
 
-## 许可
+## 📜 许可
 
-本项目用于学术研究与原型验证，调用 Semantic Scholar API 须遵守其使用条款。
-
----
-
-有别的环境/部署方式（如 Linux systemd、Docker）想要一份脚本样板，我可以给你补一版。
+MIT（或按你项目需要替换）。
