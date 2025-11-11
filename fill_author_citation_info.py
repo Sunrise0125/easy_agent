@@ -4,11 +4,11 @@ from typing import List, Optional, Tuple, Dict
 import httpx
 import logging
 from schemas import PaperMetadata
+from config import OPENALEX_AUTHORS, OPENALEX_MAILTO
 
 logger = logging.getLogger("paper_survey.author_hindex")
 
-OPENALEX_AUTHORS = "https://api.openalex.org/authors"
-OPENALEX_MAILTO = "2649022496@qq.com"  # 按 OpenAlex 要求填写可联系邮箱
+
 TIMEOUT = 10.0
 CONCURRENCY = 8
 

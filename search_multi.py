@@ -27,7 +27,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
 import xml.etree.ElementTree as ET
 
-from config import S2_BASE, S2_API_KEY, S2_RPS
+from config import S2_BASE, S2_API_KEY, S2_RPS,OPENALEX_URL, CROSSREF_URL, ARXIV_URL, PUBMED_EUTILS, EUPMC_URL
 from schemas import PaperMetadata, SearchIntent
 
 
@@ -41,11 +41,7 @@ FIELDS = (
     "publicationDate,fieldsOfStudy"
 )
 
-OPENALEX_URL = "https://api.openalex.org/works"
-CROSSREF_URL = "https://api.crossref.org/works"
-ARXIV_URL = "https://export.arxiv.org/api/query" 
-PUBMED_EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-EUPMC_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+
 
 _HAS_KEY = bool(S2_API_KEY)
 _INTERVAL = 1.0 / max(float(S2_RPS), 0.05)  # 全局 RPS 限速（最小 0.05 防除零）
