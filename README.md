@@ -1,6 +1,19 @@
-# PaperFinder Agent — 说明文档（中文）
+# PaperFinder Agent
 
-一个轻量的多来源论文检索服务（基于 FastAPI）：把自然语言查询解析成结构化意图，向多家学术接口发起检索，统一清洗与去重，排序后返回简洁 JSON 结果。
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**一个轻量级的多来源学术论文检索服务**
+
+基于 FastAPI 构建，集成自然语言查询解析、多数据源聚合检索、智能去重过滤和结果排序，提供简洁高效的 RESTful API。
+
+### 技术栈
+- **框架**: FastAPI + Uvicorn
+- **LLM 集成**: OpenAI / DeepSeek / 兼容 API
+- **学术数据源**: Semantic Scholar, OpenAlex, Crossref, arXiv, PubMed, Europe PMC
+- **异步任务**: 内置任务队列 + 进度追踪
+- **语言**: Python 3.10+
 
 ## ✨ 功能概览
 
@@ -11,23 +24,52 @@
 * **跨来源去重**（键顺序：DOI → URL → 规范化标题+年份）
 * **排序**（相关性 / 引用数 / 发表日期）
 * **丰富统计**：逐来源抓取/去重/过滤计数、选用来源清单等
+* **同步 + 异步接口**：支持即时响应和后台任务两种模式
+
+---
+
+## 🚀 快速开始
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 配置环境变量
+cat > .env << EOF
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+S2_API_KEY=your_s2_key
+EOF
+
+# 3. 启动服务
+uvicorn main:app --reload --port 8000
+
+# 4. 测试接口（新终端）
+curl "http://localhost:8000/search?user_query=深度学习目标检测综述"
+
+# 5. 查看 API 文档
+open http://localhost:8000/docs
+```
 
 ---
 
 ## 🗂 目录结构
 
 ```
-paper_survey/
-├─ main.py                # FastAPI 接口 (/search)
-├─ search_multi.py        # 多来源聚合 + 去重 + 过滤
-├─ s2_client.py           # 单来源适配器（S2/OpenAlex/Crossref/等）
-├─ llm_parser.py          # 自然语言 → SearchIntent
-├─ ranking.py             # 排序与截断
-├─ schemas.py             # Pydantic 模型：SearchIntent, PaperMetadata
-├─ author_hindex.py       # （可选）首作者 h-index 填充（OpenAlex）
-├─ test_search.py         # 批量测试：产出 JSON/Markdown 报告
-├─ logging_setup.py       # 日志配置
-├─ config.py              # 环境变量加载
+easy_agent/
+├─ main.py                        # FastAPI 接口 (/search, /tasks/*)
+├─ search_multi.py                # 多来源聚合 + 去重 + 过滤（S2/OpenAlex/Crossref/arXiv/PubMed/EuropePMC）
+├─ llm_parser.py                  # 自然语言 → SearchIntent
+├─ ranking.py                     # 排序与截断
+├─ schemas.py                     # Pydantic 模型：SearchIntent, PaperMetadata
+├─ task_executor.py               # 异步任务执行引擎
+├─ task_store.py                  # 任务状态存储与管理
+├─ fill_author_citation_info.py   # （可选）首作者 h-index 填充（OpenAlex）
+├─ test_search.py                 # 批量测试：产出 JSON/Markdown 报告
+├─ test_fast_api.py               # FastAPI 接口测试
+├─ logging_setup.py               # 日志配置
+├─ config.py                      # 环境变量加载
 └─ requirements.txt
 ```
 
@@ -66,26 +108,51 @@ scholarly         # 如需 Google Scholar（不推荐生产）
 
 在项目根目录创建 `.env`（或直接设置环境变量）：
 
-```
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-4o-mini            # 与 llm_parser.py 保持一致
-S2_API_KEY=...                      # Semantic Scholar 可选但推荐
-S2_BASE=https://api.semanticscholar.org/graph/v1
-S2_RPS=2                            # S2 限速（req/s）
-LOG_LEVEL=INFO
+```bash
+# LLM 配置（必需）
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4o-mini                              # 或 deepseek-chat
+OPENAI_BASE_URL=https://api.openai.com/v1             # OpenAI 官方
+# OPENAI_BASE_URL=https://api.deepseek.com/v1        # DeepSeek 替代方案
+
+# Semantic Scholar 配置（推荐）
+S2_API_KEY=your_s2_key                                # 可选但强烈推荐
+S2_RPS=2                                              # 有 key: 2 req/s, 无 key: 0.5 req/s
+
+# 服务配置
+HOST=127.0.0.1                                        # 默认本地访问
+PORT=8000                                             # 服务端口
+LOG_LEVEL=INFO                                        # DEBUG|INFO|WARNING|ERROR
+MAX_RESULTS_LIMIT=500                                 # 单次搜索最大结果数（1-1000）
 ```
 
-> 无 `S2_API_KEY` 亦可运行，但分页与速率限制更保守。
+> **说明**：
+> - 无 `S2_API_KEY` 亦可运行，但速率限制更严格（0.5 req/s）
+> - `OPENAI_BASE_URL` 支持任何 OpenAI 兼容 API（OpenAI/DeepSeek/本地模型）
+> - `MAX_RESULTS_LIMIT` 超过 100 时建议使用异步接口 `/tasks/search`
 
 ---
 
 ## ▶️ 启动
 
+### 开发模式（自动重载）
 ```bash
 uvicorn main:app --reload --port 8000
 ```
 
-打开：`http://localhost:8000/docs`
+### 生产模式（多进程）
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+### Windows PowerShell 快捷启动
+```powershell
+.\start.ps1
+```
+
+### 访问接口文档
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
 
 ---
 
@@ -330,29 +397,48 @@ python test_search.py
 ```
 输出 `test_results/` 下的 JSON 与 Markdown 报告：包含 LLM 解析、逐来源统计、Top 结果等。
 
-### 异步 API 集成测试
+### FastAPI 接口测试
 ```bash
-python test_async_api.py
-```
-测试任务创建、轮询、并发等场景。
+# 确保服务已启动（另一个终端）
+uvicorn main:app --reload
 
-### 向后兼容性测试
-```bash
-python test_backward_compat.py
+# 运行接口测试
+python test_fast_api.py
 ```
-验证同步 `/search` 端点保持不变。
+测试同步接口 `/search` 和异步接口 `/tasks/*` 的基本功能。
 
 ---
 
 ## 🩺 常见问题
 
-* **S2 400 “too many hits”**：查询过宽。请增加短语引号、限制日期/场馆，或加关键词组；代码也会跳过 `"*"` 这类无意义组合。
+* **S2 400 "too many hits"**：查询过宽。请增加短语引号、限制日期/场馆，或加关键词组；代码也会跳过 `"*"` 这类无意义组合。
 * **arXiv 时间过滤**：arXiv 不直接支持服务端按发表时间过滤，本项目在客户端做日期兜底。
 * **不同来源引用数不一致**：正常现象，索引更新时间与统计口径不同。
 * **首作者 h-index 为 null**：OpenAlex 可能无匹配或无统计。代码可按需回落为 `0`。
+* **大量结果请求耗时长**：请求 200+ 篇论文可能需要 10-30 秒，建议使用异步接口 `/tasks/search`。
+
+---
+
+## ⚡ 性能说明
+
+### 响应时间参考
+| 结果数量 | 预计耗时 | 推荐接口 |
+|---------|----------|----------|
+| 10 篇   | ~1 秒    | 同步 `/search` |
+| 50 篇   | ~2 秒    | 同步 `/search` |
+| 100 篇  | ~4 秒    | 异步 `/tasks/search` |
+| 200 篇  | ~8 秒    | 异步 `/tasks/search` |
+| 500 篇  | ~20 秒   | 异步 `/tasks/search` |
+
+### 使用建议
+- **即时查询**：使用 `GET /search`，结果数 ≤ 50
+- **批量检索**：使用 `POST /tasks/search`，支持进度查询
+- **生产环境**：配置 `S2_API_KEY` 提升速率限制（0.5 → 2 req/s）
+- **并发控制**：S2 有严格的速率限制，建议单实例部署
+- **结果上限**：默认 500 篇，可通过 `MAX_RESULTS_LIMIT` 环境变量调整（1-1000）
 
 ---
 
 ## 📜 许可
 
-MIT（或按你项目需要替换）。
+MIT
