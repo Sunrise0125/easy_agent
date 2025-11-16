@@ -1,0 +1,15 @@
+# Ignore environment files
+.env
+/test_results
+/__pycache__
+.env.example
+run_test.ps1
+.env.example
+TEST_README.md
+test_search_http.py
+AGENTS.md
+CLAUDE.md
+IMPLEMENTATION_SUMMARY.md
+/openspec
+/.serena
+/.claude
